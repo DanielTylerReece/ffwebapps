@@ -122,6 +122,7 @@ mod linux {
         muted: bool,
         dnd: bool,
         suspend: bool,
+        autostart: bool,
     }
 
     #[derive(Clone)]
@@ -207,9 +208,9 @@ mod linux {
         }
 
         fn menu(&self) -> Vec<MenuItem<Self>> {
-            let (hidden, muted, dnd, suspend) = {
+            let (hidden, muted, dnd, suspend, autostart) = {
                 let st = self.state.lock().unwrap();
-                (st.hidden, st.muted, st.dnd, st.suspend)
+                (st.hidden, st.muted, st.dnd, st.suspend, st.autostart)
             };
             vec![
                 StandardItem {
@@ -245,6 +246,13 @@ mod linux {
                     label: "Suspend when hidden".into(),
                     checked: suspend,
                     activate: Box::new(|this: &mut Self| this.send("suspend-toggle")),
+                    ..Default::default()
+                }
+                .into(),
+                CheckmarkItem {
+                    label: "Start on login".into(),
+                    checked: autostart,
+                    activate: Box::new(|this: &mut Self| this.send("autostart-toggle")),
                     ..Default::default()
                 }
                 .into(),
@@ -307,6 +315,7 @@ mod linux {
             muted: false,
             dnd: false,
             suspend: false,
+            autostart: false,
         }));
 
         // The current ksni handle is replaced whenever the service is re-created
@@ -348,6 +357,7 @@ mod linux {
                                         "muted" => st.muted = on,
                                         "dnd" => st.dnd = on,
                                         "suspend" => st.suspend = on,
+                                        "autostart" => st.autostart = on,
                                         _ => {}
                                     }
                                 }
