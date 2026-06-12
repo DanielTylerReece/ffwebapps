@@ -1,0 +1,13 @@
+# Rust build output
+/target
+
+# makepkg build artifacts
+/packages/arch/src/
+/packages/arch/pkg/
+/packages/arch/*.pkg.tar.*
+/packages/arch/ffwebapps/
+
+# Editor / OS
+*.swp
+*~
+.DS_Store

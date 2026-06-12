@@ -1,0 +1,60 @@
+# Maintainer: jordan Johnston <johnstonljordan@gmail.com>
+#
+# ffwebapps — run web apps (PWAs) as native, chromeless Firefox windows with
+# system-tray integration (close-to-tray, unread badge, run-in-background).
+# Built on Firefox's first-party "Web Apps" (Taskbar Tabs) infrastructure.
+#
+# This is a VCS package: it builds the current commit of the source repo.
+# When you publish the fork, change `source` to your remote, e.g.
+#   source=("$pkgname::git+https://github.com/youruser/ffwebapps.git")
+
+pkgname=ffwebapps
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Run web apps as native, chromeless Firefox windows with system-tray integration"
+arch=('x86_64')
+url="https://github.com/nine7nine/ffwebapps"
+license=('MPL-2.0')
+depends=('firefox')
+makedepends=('rust' 'cargo' 'git')
+optdepends=('qt6-tools: KDE tray hide/show & window control (qdbus6)'
+            'plasma-workspace: KDE Plasma system tray and KWin')
+install="$pkgname.install"
+source=("$pkgname::git+https://github.com/nine7nine/ffwebapps.git")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "$srcdir/$pkgname"
+  printf "0.1.0.r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
+}
+
+build() {
+  cd "$srcdir/$pkgname"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  # CLI-only build: the binary + tray helper (no connector / native messaging).
+  cargo build --release --frozen --bin ffwebapps --bin ffwebapps-tray
+}
+
+package() {
+  cd "$srcdir/$pkgname"
+
+  # Executables
+  install -Dm755 target/release/ffwebapps      "$pkgdir/usr/bin/ffwebapps"
+  install -Dm755 target/release/ffwebapps-tray "$pkgdir/usr/bin/ffwebapps-tray"
+
+  # Runtime + profile assets (autoconfig that enables Web Apps + external-link
+  # handling, and userChrome.css for the chromeless dark titlebar).
+  install -dm755 "$pkgdir/usr/share/ffwebapps"
+  cp -r userchrome "$pkgdir/usr/share/ffwebapps/userchrome"
+  find "$pkgdir/usr/share/ffwebapps" -type d -exec chmod 755 {} +
+  find "$pkgdir/usr/share/ffwebapps" -type f -exec chmod 644 {} +
+
+  # Shell completions
+  install -Dm644 target/release/completions/ffwebapps.bash "$pkgdir/usr/share/bash-completion/completions/ffwebapps"
+  install -Dm644 target/release/completions/ffwebapps.fish "$pkgdir/usr/share/fish/vendor_completions.d/ffwebapps.fish"
+  install -Dm644 target/release/completions/_ffwebapps     "$pkgdir/usr/share/zsh/site-functions/_ffwebapps"
+
+  # License
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

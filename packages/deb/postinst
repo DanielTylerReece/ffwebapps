@@ -1,0 +1,23 @@
+#!/bin/sh
+set -e
+
+# Duplicate the manifest file over lib and lib64 directories
+# Needed because otherwise the manifest may not be detected on some platforms
+# Needed here because packaging it normally breaks when lib64 is a symlink to lib
+mkdir -p /usr/lib64/mozilla/native-messaging-hosts || true
+cp -f /usr/lib/mozilla/native-messaging-hosts/firefoxpwa.json /usr/lib64/mozilla/native-messaging-hosts/firefoxpwa.json || true
+
+# Make shell completions executable
+# We cannot do this in Cargo.toml because of cargo-deb bug
+# See: https://github.com/mmstick/cargo-deb/issues/67
+chmod 755 /usr/share/bash-completion/completions/firefoxpwa
+chmod 755 /usr/share/fish/vendor_completions.d/firefoxpwa.fish
+chmod 755 /usr/share/zsh/vendor-completions/_firefoxpwa
+
+# Add notice that it is recommended to also install the extension
+if [ -z "$2" ]
+then
+    echo "You have successfully installed the native part of the PWAsForFirefox project"
+    echo "You should also install the Firefox extension if you haven't already"
+    echo "Download: https://addons.mozilla.org/firefox/addon/pwas-for-firefox/"
+fi

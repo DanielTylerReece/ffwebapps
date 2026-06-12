@@ -1,0 +1,20 @@
+post_install() {
+  cat <<'EOF'
+==> ffwebapps installed. Next steps:
+
+    1. Set up the Firefox runtime (lightweight symlink to your system Firefox):
+         ffwebapps runtime install --link
+
+    2. Install a web app, e.g. Microsoft Teams:
+         ffwebapps site install https://teams.cloud.microsoft/
+
+    It will appear in your application menu as a chromeless window with a
+    system-tray icon (close-to-tray, unread badge, run-in-background).
+
+    Note: tray hide/show and window control currently target KDE Plasma (KWin).
+EOF
+}
+
+post_upgrade() {
+  post_install
+}

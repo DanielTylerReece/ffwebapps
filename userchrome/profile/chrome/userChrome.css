@@ -1,0 +1,36 @@
+/* ffwebapps — native-style titlebar for Firefox Web App (Taskbar Tab) windows.
+ *
+ * Firefox's minimal-ui taskbar-tab window shows a slim toolbar with a read-only
+ * address bar plus navigation/extension buttons. We hide the entire customizable
+ * toolbar area (#nav-bar-customization-target), which holds all of those buttons,
+ * for a clean app titlebar. The window controls and the app (hamburger) menu live
+ * OUTSIDE that container, so they remain.
+ */
+
+:root[taskbartab] #nav-bar-customization-target > *:not(.titlebar-buttonbox-container) {
+  display: none !important;
+}
+
+/* Dark chrome to match the app's dark content. The manifest declares a light
+   theme_color (#ebebeb for Teams) which Firefox applies to the titlebar/toolbar,
+   clashing with the app's dark UI. Override it to a dark colour with light icons.
+   Change the hex below to taste. */
+:root[taskbartab] {
+  --toolbar-bgcolor: #000000 !important;
+  --toolbar-color: #f2f2f2 !important;
+  --lwt-accent-color: #000000 !important;
+  --lwt-text-color: #f2f2f2 !important;
+  --toolbarbutton-icon-fill: #f2f2f2 !important;
+  --chrome-content-separator-color: #000000 !important;
+}
+
+:root[taskbartab] #navigator-toolbox,
+:root[taskbartab] #nav-bar,
+:root[taskbartab] #TabsToolbar {
+  background: #000000 !important;
+  color: #f2f2f2 !important;
+}
+
+:root[taskbartab] .titlebar-button {
+  fill: #f2f2f2 !important;
+}

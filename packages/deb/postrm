@@ -1,0 +1,17 @@
+#!/bin/sh
+set -e
+
+# Remove the duplicated manifest files
+if [ "$1" = "remove" ]
+then
+    rm /usr/lib/mozilla/native-messaging-hosts/firefoxpwa.json || true
+    rm /usr/lib64/mozilla/native-messaging-hosts/firefoxpwa.json || true
+fi
+
+# Add warning that runtime, profiles and web apps are still installed
+if [ "$1" = "remove" ]
+then
+    echo "Runtime, profiles and web apps are still installed in user directories"
+    echo "You can remove them manually after this package is uninstalled"
+    echo "Doing that will remove all installed web apps and their data"
+fi

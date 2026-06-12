@@ -1,0 +1,14 @@
+[package]
+name = "firefoxpwa-background"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[profile.release]
+codegen-units = 1
+lto = true
+
+[dependencies]
+tauri-winrt-notification = { version = "0.7.2", default-features = false }
+trayicon = { version = "0.4.0", default-features = false }
+winit = { version = "0.30.13", default-features = false }
