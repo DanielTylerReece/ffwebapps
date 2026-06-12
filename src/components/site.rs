@@ -111,6 +111,50 @@ pub struct SiteConfig {
     /// services. When empty, a sensible default is derived from the scope.
     #[serde(default)]
     pub allowed_domains: Vec<String>,
+
+    /// Opt-in: force/maximise hardware video decoding for WebRTC calls. Off by
+    /// default. Regular video decode is already GPU-accelerated by Firefox on
+    /// Linux; this forces decoding past Firefox's GPU blocklist and enables the
+    /// hardware VP8 path used by WhatsApp/Meet. Can expose driver bugs.
+    #[serde(default)]
+    pub hardware_webrtc: bool,
+
+    /// Opt-in: process scheduling applied to the runtime at launch, e.g.
+    /// `nice:-5`, `rr:5`, `fifo:5`, `batch`, `idle`. Keeps audio/video
+    /// glitch-free under load (useful for video chat on RT kernels). RT
+    /// policies (`rr`/`fifo`) need `rtprio` privileges; ffwebapps falls back to
+    /// normal scheduling if they can't be applied.
+    #[serde(default)]
+    pub scheduling: Option<String>,
+}
+
+/// Build the launch wrapper for an optional scheduling spec. Returns an empty
+/// vec when there's no (or an unrecognised) spec; otherwise an argv prefix that
+/// runs the runtime under the requested policy. RT policies gracefully fall back
+/// to normal scheduling if they can't be applied (e.g. no `rtprio` privilege).
+fn scheduling_launcher(spec: Option<&str>) -> Vec<String> {
+    let spec = match spec {
+        Some(s) => s.trim(),
+        None => return vec![],
+    };
+    let sched = if let Some(n) = spec.strip_prefix("nice:") {
+        format!("nice -n {}", n.trim())
+    } else if let Some(p) = spec.strip_prefix("rr:") {
+        format!("chrt -r {}", p.trim())
+    } else if let Some(p) = spec.strip_prefix("fifo:") {
+        format!("chrt -f {}", p.trim())
+    } else if spec == "batch" {
+        "chrt -b 0".to_string()
+    } else if spec == "idle" {
+        "chrt -i 0".to_string()
+    } else {
+        return vec![];
+    };
+
+    // `<sched> "$@"` runs the runtime under the policy; on failure (e.g. no
+    // privilege for an RT policy) we still `exec "$@"` so the app launches.
+    let script = format!("{sched} \"$@\" || exec \"$@\"");
+    vec!["sh".to_string(), "-c".to_string(), script, "ffwebapps-sched".to_string()]
 }
 
 #[non_exhaustive]
@@ -248,10 +292,12 @@ impl Site {
             vars.insert("GTK_USE_PORTAL".into(), "1".into());
         }
 
-        // Include all user arguments and variables and launch the runtime
+        // Include all user arguments and variables and launch the runtime,
+        // optionally under a scheduling policy (nice / RT) for smooth media.
         args.extend_from_slice(arguments);
         vars.extend(variables);
-        runtime.run(&args, vars)
+        let launcher = scheduling_launcher(self.config.scheduling.as_deref());
+        runtime.run(&launcher, &args, vars)
     }
 }
 

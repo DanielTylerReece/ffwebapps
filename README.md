@@ -84,9 +84,9 @@ Daily use:
 ```bash
 ffwebapps runtime install [--link] | uninstall | patch
 
-ffwebapps site install <MANIFEST_URL> [--document-url --name --start-url --profile --launch-now …]
+ffwebapps site install <MANIFEST_URL> [--document-url --name --start-url --profile --launch-now --hardware-webrtc --scheduling <spec> …]
 ffwebapps site launch <ULID> [--url <URL> | --protocol [<URL>]]
-ffwebapps site update <ULID> [--update-manifest --update-icons]
+ffwebapps site update <ULID> [--update-manifest --update-icons --hardware-webrtc <bool> --scheduling <spec>]
 ffwebapps site uninstall <ULID>
 
 ffwebapps profile list            # lists profiles + their apps and ULIDs
@@ -104,6 +104,34 @@ Per-app preferences live in the app's profile
   - `ffwebapps.externalLinks.enabled` — toggle external-link routing
   - `ffwebapps.allowedDomains` — comma-separated wildcard domains kept in-window
 - `chrome/userChrome.css` — titlebar colour and chrome tweaks (default `#000`)
+
+## Performance (video chat)
+
+For heavy apps like Teams / WhatsApp, two opt-in knobs are exposed (off by
+default; set them per app at `install`/`update` time):
+
+- **`--hardware-webrtc`** — force/maximise hardware video decoding for calls.
+  On Linux, Firefox already GPU-decodes regular video and the WebRTC H.264/VP9
+  paths by default; this writes `media.hardware-video-decoding.force-enabled`
+  (bypass Firefox's GPU blocklist) and `media.navigator.mediadatadecoder_vp8_hardware_enabled`
+  (the HW VP8 path used by WhatsApp/Meet). Needs a working VA-API driver; can
+  expose driver bugs, hence opt-in. Verify in `about:support` (Media → decoder)
+  and `about:webrtc` during a call (inbound video should use a hardware decoder).
+
+- **`--scheduling <spec>`** — run the runtime under a scheduling policy to keep
+  audio/video glitch-free under load. Specs: `nice:-5` (gentle, always works),
+  `rr:5` / `fifo:5` (real-time; need `rtprio` privileges — e.g. membership in a
+  group with `rtprio` in `/etc/security/limits.conf`), `batch`, `idle`. RT
+  policies gracefully fall back to normal scheduling if they can't be applied.
+
+> There is **no hardware-audio knob** — WebRTC audio (Opus) is CPU-cheap and has
+> no GPU path. Echo-cancel / noise-suppression / auto-gain are on by default.
+> The audio win under load is `--scheduling` (RT), not a pref.
+
+```bash
+# e.g. Teams with forced HW video decode + real-time scheduling
+ffwebapps site update <ULID> --hardware-webrtc true --scheduling rr:5
+```
 
 ## How it works
 

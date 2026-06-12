@@ -2,10 +2,15 @@
 //!
 //! Shows a tray icon with an unread-count badge for a running web app. Closing
 //! the web app window is intercepted by the runtime and turned into a hide
-//! request (a `.hide` sentinel) which we honour by minimising + hiding the
-//! window from the taskbar via the window manager (KWin). A single click toggles
-//! the window between hidden and shown. Using the window manager (rather than
-//! unmapping the window) preserves the surface, so there is no resize flicker.
+//! request (a `.hide` sentinel) which we honour by hiding the window from the
+//! taskbar via the window manager (KWin). A single click toggles the window
+//! between hidden and shown. Using the window manager (rather than unmapping the
+//! window) preserves the surface, so there is no resize flicker.
+//!
+//! Lifecycle: one tray per web app (de-duplicated by a pidfile). The tray exits
+//! when its runtime exits, and it re-registers itself if the StatusNotifier host
+//! (e.g. plasmashell) restarts, so it never silently disappears while the app is
+//! running. "Quit" terminates the runtime itself, not just this helper.
 
 #[cfg(target_os = "linux")]
 fn main() {
@@ -14,7 +19,7 @@ fn main() {
 
 #[cfg(not(target_os = "linux"))]
 fn main() {
-    eprintln!("firefoxpwa-tray is only supported on Linux");
+    eprintln!("ffwebapps-tray is only supported on Linux");
     std::process::exit(1);
 }
 
@@ -23,13 +28,18 @@ mod linux {
     use std::fs;
     use std::path::PathBuf;
     use std::process::Command;
-    use std::time::Duration;
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
 
     use ksni::menu::StandardItem;
-    use ksni::{MenuItem, Tray, TrayService};
+    use ksni::{Handle, MenuItem, Tray, TrayService};
 
     fn rt_dir() -> String {
         std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into())
+    }
+
+    fn tray_pidfile(id: &str) -> PathBuf {
+        PathBuf::from(format!("{}/ffwebapps-tray-{id}.pid", rt_dir()))
     }
 
     fn log(msg: &str) {
@@ -51,6 +61,8 @@ mod linux {
         exec: String,
         unread_file: PathBuf,
         hide_file: PathBuf,
+        show_file: PathBuf,
+        hidden_file: PathBuf,
         running_file: PathBuf,
     }
 
@@ -78,6 +90,8 @@ mod linux {
         Options {
             unread_file: PathBuf::from(format!("{rt}/ffwebapps-{id}.unread")),
             hide_file: PathBuf::from(format!("{rt}/ffwebapps-{id}.hide")),
+            show_file: PathBuf::from(format!("{rt}/ffwebapps-{id}.show")),
+            hidden_file: PathBuf::from(format!("{rt}/ffwebapps-{id}.hidden")),
             running_file: PathBuf::from(format!("{rt}/ffwebapps-{id}.running")),
             id,
             name,
@@ -87,9 +101,9 @@ mod linux {
         }
     }
 
-    /// Singleton guard: if a tray for this app id is already alive, exit.
+    /// Singleton guard: if a tray for this app id is already alive, return true.
     fn already_running(id: &str) -> bool {
-        let pidfile = PathBuf::from(format!("{}/ffwebapps-tray-{id}.pid", rt_dir()));
+        let pidfile = tray_pidfile(id);
         if let Ok(contents) = fs::read_to_string(&pidfile)
             && let Ok(pid) = contents.trim().parse::<i32>()
             && PathBuf::from(format!("/proc/{pid}")).exists()
@@ -100,12 +114,18 @@ mod linux {
         false
     }
 
+    fn read_pid(file: &PathBuf) -> Option<i32> {
+        fs::read_to_string(file).ok().and_then(|s| s.trim().parse::<i32>().ok())
+    }
+
     fn pid_alive(running_file: &PathBuf) -> bool {
-        fs::read_to_string(running_file)
-            .ok()
-            .and_then(|s| s.trim().parse::<i32>().ok())
+        read_pid(running_file)
             .map(|pid| PathBuf::from(format!("/proc/{pid}")).exists())
             .unwrap_or(false)
+    }
+
+    fn read_unread(unread_file: &PathBuf) -> u32 {
+        fs::read_to_string(unread_file).ok().and_then(|s| s.trim().parse::<u32>().ok()).unwrap_or(0)
     }
 
     /// Run a KWin script (loads it, runs it, unloads it). Tries qdbus6 then qdbus.
@@ -136,8 +156,8 @@ mod linux {
         }
     }
 
-    /// Minimise + hide from the taskbar (hidden = true), or restore + activate
-    /// (hidden = false), the web app window identified by its Wayland app_id.
+    /// Hide from the taskbar (hidden = true), or restore + activate (hidden =
+    /// false), the web app window identified by its Wayland app_id.
     fn set_window_hidden(wmclass: &str, hidden: bool) {
         if wmclass.is_empty() {
             return;
@@ -145,12 +165,17 @@ mod linux {
         // Hide by moving the window far off-screen (a fixed reversible offset)
         // rather than minimising — this avoids KDE's minimize animation (which
         // slides toward the dock, not the tray) and preserves the exact geometry.
+        // The moves are gated on the window's actual position so they are
+        // idempotent and self-correcting: only move off-screen if it's currently
+        // on-screen and vice versa. This means a stale hidden-state marker can
+        // never push a visible window off-screen or pull a hidden one twice.
         let body = if hidden {
-            "w.skipTaskbar=true; w.skipSwitcher=true; w.skipPager=true; \
-             const g=w.frameGeometry; w.frameGeometry={x:g.x-50000, y:g.y, width:g.width, height:g.height};"
+            "if(w.frameGeometry.x>-10000){ w.skipTaskbar=true; w.skipSwitcher=true; w.skipPager=true; \
+             const g=w.frameGeometry; w.frameGeometry={x:g.x-50000, y:g.y, width:g.width, height:g.height}; }"
         } else {
-            "const g=w.frameGeometry; w.frameGeometry={x:g.x+50000, y:g.y, width:g.width, height:g.height}; \
-             w.skipTaskbar=false; w.skipSwitcher=false; w.skipPager=false; workspace.activeWindow=w;"
+            "if(w.frameGeometry.x<-10000){ const g=w.frameGeometry; \
+             w.frameGeometry={x:g.x+50000, y:g.y, width:g.width, height:g.height}; } \
+             w.skipTaskbar=false; w.skipSwitcher=false; w.skipPager=false; w.minimized=false; workspace.activeWindow=w;"
         };
         let js = format!(
             "const l=(workspace.windowList?workspace.windowList():workspace.clientList());\
@@ -159,36 +184,62 @@ mod linux {
         kwin_run(&js);
     }
 
-    struct AppTray {
-        opts: Options,
+    fn is_hidden(hidden_file: &PathBuf) -> bool {
+        hidden_file.exists()
+    }
+
+    /// Hide the window off-screen and record the hidden state. The marker is
+    /// file-backed so the state survives a tray restart (e.g. after the
+    /// StatusNotifier host restarts).
+    fn hide_window(opts: &Options) {
+        set_window_hidden(&opts.wmclass, true);
+        let _ = fs::write(&opts.hidden_file, "1");
+    }
+
+    /// Restore + focus the window (a no-op move if it's already on-screen, so
+    /// this doubles as "raise/focus") and clear the hidden state.
+    fn show_window(opts: &Options) {
+        set_window_hidden(&opts.wmclass, false);
+        let _ = fs::remove_file(&opts.hidden_file);
+    }
+
+    struct State {
         unread: u32,
-        hidden: bool,
+    }
+
+    #[derive(Clone)]
+    struct AppTray {
+        opts: Arc<Options>,
+        state: Arc<Mutex<State>>,
     }
 
     impl AppTray {
-        fn read_unread(&self) -> u32 {
-            fs::read_to_string(&self.opts.unread_file)
-                .ok()
-                .and_then(|s| s.trim().parse::<u32>().ok())
-                .unwrap_or(0)
-        }
-
-        fn activate_app(&mut self) {
+        /// Toggle the window (show <-> hide), or relaunch the app if it isn't
+        /// running. Singleton-safe: relaunch remotes into the existing instance.
+        fn activate_app(&self) {
             if !pid_alive(&self.opts.running_file) {
                 log("activate: not running -> launch");
                 let _ = Command::new("sh").arg("-c").arg(&self.opts.exec).spawn();
-                self.hidden = false;
+                let _ = fs::remove_file(&self.opts.hidden_file);
                 return;
             }
-            if self.hidden {
+            if is_hidden(&self.opts.hidden_file) {
                 log("activate: show");
-                set_window_hidden(&self.opts.wmclass, false);
-                self.hidden = false;
+                show_window(&self.opts);
             } else {
                 log("activate: hide");
-                set_window_hidden(&self.opts.wmclass, true);
-                self.hidden = true;
+                hide_window(&self.opts);
             }
+        }
+
+        /// Quit the whole app: terminate the runtime, clean up, then exit.
+        fn quit_app(&self) {
+            log("quit: terminating runtime");
+            if let Some(pid) = read_pid(&self.opts.running_file) {
+                let _ = Command::new("kill").arg("-TERM").arg(pid.to_string()).status();
+            }
+            cleanup(&self.opts);
+            std::process::exit(0);
         }
     }
 
@@ -206,11 +257,8 @@ mod linux {
         }
 
         fn tool_tip(&self) -> ksni::ToolTip {
-            let description = if self.unread > 0 {
-                format!("{} unread", self.unread)
-            } else {
-                String::new()
-            };
+            let unread = self.state.lock().unwrap().unread;
+            let description = if unread > 0 { format!("{unread} unread") } else { String::new() };
             ksni::ToolTip {
                 icon_name: self.opts.icon.clone(),
                 title: self.opts.name.clone(),
@@ -221,7 +269,7 @@ mod linux {
 
         // Quiet unread badge (no pulsing).
         fn overlay_icon_name(&self) -> String {
-            if self.unread > 0 { "mail-unread".into() } else { String::new() }
+            if self.state.lock().unwrap().unread > 0 { "mail-unread".into() } else { String::new() }
         }
 
         fn status(&self) -> ksni::Status {
@@ -246,7 +294,7 @@ mod linux {
                 StandardItem {
                     label: "Quit".into(),
                     icon_name: "application-exit".into(),
-                    activate: Box::new(|_| std::process::exit(0)),
+                    activate: Box::new(|this: &mut Self| this.quit_app()),
                     ..Default::default()
                 }
                 .into(),
@@ -254,46 +302,102 @@ mod linux {
         }
     }
 
+    /// Remove this app's runtime sentinels and the tray pidfile.
+    fn cleanup(opts: &Options) {
+        let _ = fs::remove_file(&opts.unread_file);
+        let _ = fs::remove_file(&opts.hide_file);
+        let _ = fs::remove_file(&opts.show_file);
+        let _ = fs::remove_file(&opts.hidden_file);
+        let _ = fs::remove_file(tray_pidfile(&opts.id));
+    }
+
     pub fn run() {
-        let opts = parse_args();
+        let opts = Arc::new(parse_args());
         if opts.id.is_empty() {
-            eprintln!("firefoxpwa-tray: --id is required");
+            eprintln!("ffwebapps-tray: --id is required");
             std::process::exit(1);
         }
         if already_running(&opts.id) {
             return;
         }
 
-        let unread = fs::read_to_string(&opts.unread_file)
-            .ok()
-            .and_then(|s| s.trim().parse::<u32>().ok())
-            .unwrap_or(0);
+        let state = Arc::new(Mutex::new(State { unread: read_unread(&opts.unread_file) }));
 
-        let tray = AppTray { opts, unread, hidden: false };
-        let service = TrayService::new(tray);
-        let handle = service.handle();
+        // The current ksni handle is replaced whenever the service is re-created
+        // (after a StatusNotifier host restart); the poll thread uses it to push
+        // unread-badge refreshes to whichever service generation is live.
+        let cur_handle: Arc<Mutex<Option<Handle<AppTray>>>> = Arc::new(Mutex::new(None));
 
-        // Honour hide requests from the runtime (window close) and refresh unread.
-        std::thread::spawn(move || {
-            loop {
-                std::thread::sleep(Duration::from_millis(250));
-                handle.update(|tray: &mut AppTray| {
-                    if tray.opts.hide_file.exists() {
-                        let _ = fs::remove_file(&tray.opts.hide_file);
-                        if !tray.hidden {
-                            log("hide request -> minimise");
-                            set_window_hidden(&tray.opts.wmclass, true);
-                            tray.hidden = true;
+        // Single background thread for the whole process lifetime: honours hide
+        // requests, refreshes the unread badge, and ties the tray's lifetime to
+        // the runtime (exit when the runtime exits; bail if it never comes up).
+        {
+            let opts = opts.clone();
+            let state = state.clone();
+            let cur_handle = cur_handle.clone();
+            std::thread::spawn(move || {
+                let start = Instant::now();
+                let mut was_alive = false;
+                loop {
+                    std::thread::sleep(Duration::from_millis(250));
+
+                    // Lifecycle: exit when the runtime dies (after it came up),
+                    // or give up if it never appears within the grace window.
+                    if pid_alive(&opts.running_file) {
+                        was_alive = true;
+                    } else if was_alive {
+                        log("runtime exited -> tray quitting");
+                        cleanup(&opts);
+                        std::process::exit(0);
+                    } else if start.elapsed() > Duration::from_secs(20) {
+                        log("runtime never started -> tray quitting");
+                        cleanup(&opts);
+                        std::process::exit(0);
+                    }
+
+                    // Honour a hide request from the runtime (window close).
+                    if opts.hide_file.exists() {
+                        let _ = fs::remove_file(&opts.hide_file);
+                        if !is_hidden(&opts.hidden_file) {
+                            log("hide request -> hide window");
+                            hide_window(&opts);
                         }
                     }
-                    let current = tray.read_unread();
-                    if current != tray.unread {
-                        tray.unread = current;
+                    // Honour a show/focus request (e.g. a duplicate launch that
+                    // was redirected here instead of opening a second window).
+                    if opts.show_file.exists() {
+                        let _ = fs::remove_file(&opts.show_file);
+                        log("show request -> restore/raise window");
+                        show_window(&opts);
                     }
-                });
-            }
-        });
 
-        let _ = service.run();
+                    // Refresh the unread badge if it changed.
+                    let current = read_unread(&opts.unread_file);
+                    let changed = {
+                        let mut st = state.lock().unwrap();
+                        let changed = st.unread != current;
+                        st.unread = current;
+                        changed
+                    };
+                    if changed && let Some(handle) = cur_handle.lock().unwrap().as_ref() {
+                        let _ = handle.update(|_: &mut AppTray| {});
+                    }
+                }
+            });
+        }
+
+        // Service (re)generation loop: ksni's run() returns if the StatusNotifier
+        // host goes away (e.g. plasmashell restart). Re-register so the icon comes
+        // back instead of vanishing. The poll thread exits the process when the
+        // runtime dies, which breaks out of this loop.
+        loop {
+            let tray = AppTray { opts: opts.clone(), state: state.clone() };
+            let service = TrayService::new(tray);
+            *cur_handle.lock().unwrap() = Some(service.handle());
+            let _ = service.run();
+            *cur_handle.lock().unwrap() = None;
+            log("tray service ended -> re-registering");
+            std::thread::sleep(Duration::from_millis(500));
+        }
     }
 }

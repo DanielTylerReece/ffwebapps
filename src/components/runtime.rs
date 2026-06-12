@@ -498,10 +498,21 @@ impl Runtime {
     #[inline]
     pub fn run<I: IntoIterator<Item = (String, String)>>(
         &self,
+        launcher: &[String],
         args: &[String],
         vars: I,
     ) -> Result<Child> {
-        let mut command = Command::new(&self.executable);
+        // An optional `launcher` prefix (e.g. a scheduling wrapper) runs the
+        // runtime under another command; otherwise launch the runtime directly.
+        let mut command = match launcher.split_first() {
+            Some((wrapper, wrapper_args)) => {
+                let mut command = Command::new(wrapper);
+                command.args(wrapper_args);
+                command.arg(&self.executable);
+                command
+            }
+            None => Command::new(&self.executable),
+        };
 
         cfg_if! {
             if #[cfg(platform_windows)] {

@@ -143,6 +143,8 @@ impl Process for InstallSite {
             launch_on_login: Some(self.launch_on_login),
             launch_on_browser: Some(self.launch_on_browser),
             launch_now: self.launch_now,
+            hardware_webrtc: false,
+            scheduling: None,
             system_integration: true,
             client: self.client.to_owned().into(),
         };
@@ -179,6 +181,8 @@ impl Process for UpdateSite {
             launch_on_browser: self.launch_on_browser,
             update_manifest: self.update_manifest,
             update_icons: self.update_icons,
+            hardware_webrtc: None,
+            scheduling: None,
             system_integration: true,
             client: self.client.to_owned().into(),
         };

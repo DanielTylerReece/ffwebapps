@@ -22,6 +22,50 @@ use crate::integrations::{IntegrationInstallArgs, IntegrationUninstallArgs};
 use crate::storage::Storage;
 use crate::utils::construct_certificates_and_client;
 
+/// Is this web app's runtime already alive? (checks the `.running` pidfile)
+#[cfg(platform_linux)]
+fn runtime_running(id: &Ulid) -> bool {
+    let rt = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
+    std::fs::read_to_string(format!("{rt}/ffwebapps-{id}.running"))
+        .ok()
+        .and_then(|s| s.trim().parse::<i32>().ok())
+        .map(|pid| std::path::Path::new(&format!("/proc/{pid}")).exists())
+        .unwrap_or(false)
+}
+
+/// Spawn the tray helper for a web app. It de-duplicates itself per app id, so
+/// calling this when a tray is already running is a no-op.
+#[cfg(platform_linux)]
+fn spawn_tray(dirs: &ProjectDirs, site: &Site) {
+    let tray_bin = dirs.executables.join("ffwebapps-tray");
+    let icon = format!("FFPWA-{}", site.ulid);
+    let wmclass = match site.config.webapp_id {
+        Some(id) => format!("org.mozilla.firefox.webapp-{id}"),
+        None => format!("FFPWA-{}", site.ulid),
+    };
+    let exec = format!(
+        "env FFPWA_USERDATA={} FFPWA_SYSDATA={} {} site launch {}",
+        dirs.userdata.display(),
+        dirs.sysdata.display(),
+        dirs.executables.join("ffwebapps").display(),
+        site.ulid,
+    );
+    let _ = std::process::Command::new(tray_bin)
+        .args([
+            "--id".to_string(),
+            site.ulid.to_string(),
+            "--name".to_string(),
+            site.name(),
+            "--icon".to_string(),
+            icon,
+            "--wmclass".to_string(),
+            wmclass,
+            "--exec".to_string(),
+            exec,
+        ])
+        .spawn();
+}
+
 impl Run for SiteLaunchCommand {
     fn run(&self) -> Result<()> {
         let dirs = ProjectDirs::new()?;
@@ -37,6 +81,24 @@ impl Run for SiteLaunchCommand {
 
         let site = storage.sites.get(&self.id).context("Web app does not exist")?;
         let args = if !&self.arguments.is_empty() { &self.arguments } else { &storage.arguments };
+
+        // Singleton: if this web app is already running, never open a second
+        // window. A duplicate launch otherwise spawns another taskbar-tab window
+        // that single-page apps reject ("open in another window / Use here").
+        // Instead, ask the tray to focus/restore the existing window, and make
+        // sure a tray is present. Skipped when a specific URL/protocol is given,
+        // which legitimately opens or navigates a window.
+        #[cfg(platform_linux)]
+        {
+            let has_target = matches!(&self.protocol, Some(Some(_))) || !self.url.is_empty();
+            if runtime_running(&self.id) && !has_target {
+                info!("Web app already running — focusing the existing window");
+                let rt = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
+                let _ = std::fs::write(format!("{rt}/ffwebapps-{}.show", self.id), "1");
+                spawn_tray(&dirs, site);
+                return Ok(());
+            }
+        }
 
         #[cfg(platform_macos)]
         {
@@ -141,38 +203,11 @@ impl Run for SiteLaunchCommand {
             }
         }
 
-        // Spawn the tray helper (best-effort) so the app gets a tray icon, an
-        // unread badge, and close-to-tray. It de-duplicates itself per web app.
+        // Spawn the tray helper so the app gets a tray icon, an unread badge,
+        // and close-to-tray. It de-duplicates itself per web app, so a freshly
+        // launched app always ends up with exactly one tray.
         #[cfg(platform_linux)]
-        {
-            let tray_bin = dirs.executables.join("ffwebapps-tray");
-            let icon = format!("FFPWA-{}", site.ulid);
-            let wmclass = match site.config.webapp_id {
-                Some(id) => format!("org.mozilla.firefox.webapp-{id}"),
-                None => format!("FFPWA-{}", site.ulid),
-            };
-            let exec = format!(
-                "env FFPWA_USERDATA={} FFPWA_SYSDATA={} {} site launch {}",
-                dirs.userdata.display(),
-                dirs.sysdata.display(),
-                dirs.executables.join("ffwebapps").display(),
-                site.ulid,
-            );
-            let _ = std::process::Command::new(tray_bin)
-                .args([
-                    "--id".to_string(),
-                    site.ulid.to_string(),
-                    "--name".to_string(),
-                    site.name(),
-                    "--icon".to_string(),
-                    icon,
-                    "--wmclass".to_string(),
-                    wmclass,
-                    "--exec".to_string(),
-                    exec,
-                ])
-                .spawn();
-        }
+        spawn_tray(&dirs, site);
 
         Ok(())
     }
@@ -221,6 +256,8 @@ impl SiteInstallCommand {
             webapp_id: Some(uuid::Uuid::new_v4()),
             external_links: None,
             allowed_domains: vec![],
+            hardware_webrtc: self.hardware_webrtc,
+            scheduling: self.scheduling.clone(),
         };
 
         let client = construct_certificates_and_client(
@@ -336,6 +373,8 @@ impl Run for SiteUpdateCommand {
         store_value!(site.config.enabled_protocol_handlers, self.enabled_protocol_handlers);
         store_value!(site.config.launch_on_login, self.launch_on_login);
         store_value!(site.config.launch_on_browser, self.launch_on_browser);
+        store_value!(site.config.hardware_webrtc, self.hardware_webrtc);
+        store_value!(site.config.scheduling, self.scheduling);
 
         let client = construct_certificates_and_client(
             self.client.user_agent.as_deref(),

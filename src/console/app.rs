@@ -112,6 +112,14 @@ pub struct SiteInstallCommand {
     #[clap(long)]
     pub launch_now: bool,
 
+    /// Force/maximise hardware video decoding for WebRTC calls (needs a working VA-API driver)
+    #[clap(long)]
+    pub hardware_webrtc: bool,
+
+    /// Scheduling policy for the runtime: nice:-5, rr:5, fifo:5, batch or idle
+    #[clap(long)]
+    pub scheduling: Option<String>,
+
     /// Disable system integration
     #[clap(long = "no-system-integration", action = ArgAction::SetFalse)]
     pub system_integration: bool,
@@ -187,6 +195,14 @@ pub struct SiteUpdateCommand {
     /// Disable icon updates
     #[clap(long = "no-icon-updates", action = ArgAction::SetFalse)]
     pub update_icons: bool,
+
+    /// Force/maximise hardware video decoding for WebRTC calls (needs a working VA-API driver)
+    #[clap(long)]
+    pub hardware_webrtc: Option<bool>,
+
+    /// Scheduling policy for the runtime: nice:-5, rr:5, fifo:5, batch, idle (empty to clear)
+    #[clap(long)]
+    pub scheduling: Option<Option<String>>,
 
     /// Disable system integration
     #[clap(long = "no-system-integration", action = ArgAction::SetFalse)]
