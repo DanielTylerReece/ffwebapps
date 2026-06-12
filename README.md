@@ -18,9 +18,13 @@ instead of patching the browser chrome at runtime.
 - **Chromeless window** — no tabs, no address bar; a dark, app-styled titlebar
 - **Distinct app identity** — its own Wayland `app_id`, so the dock / taskbar /
   alt-tab treat it as a separate application
+- **Single instance** — each app is a singleton: relaunching it (from the menu,
+  dock, or CLI) focuses the existing window instead of opening a duplicate
 - **System tray** — icon with a live **unread badge**, **run-in-background**,
-  and **close-to-tray**: the window hides and restores at the exact same
-  position and size (no minimize animation, no flicker)
+  **close-to-tray** (hides/restores at the exact same position and size — no
+  minimize animation, no flicker), and **Quit** to fully stop the app. The tray
+  survives a Plasma restart, and closing never strands a window — if no tray is
+  available the X closes the window normally
 - **Smart link routing** — out-of-scope links open in your **default browser**,
   while the app's own domains and auth/SSO providers stay in-window
 - **Lightweight runtime** — symlinks your system Firefox (a few hundred KB), so
@@ -73,9 +77,14 @@ It then appears in your application menu as a chromeless window with a tray icon
 
 Daily use:
 
-- **Launch** — from your app menu, or `ffwebapps site launch <ULID>`
-- **Close → tray** — the window's X hides it to the tray (the app keeps running)
-- **Restore / minimize** — single-click the tray icon (toggles)
+- **Launch** — from your app menu, or `ffwebapps site launch <ULID>`. If the app
+  is already running, this focuses the existing window (single instance) instead
+  of opening a second one.
+- **Close → tray** — the window's X hides it to the tray; the app keeps running.
+  If the tray isn't available, the X closes the window normally — it never gets
+  stuck.
+- **Restore** — single-click the tray icon (toggles hide/show)
+- **Quit** — right-click the tray icon → **Quit** (fully stops the app)
 - **Unread** — shown as a badge on the tray icon
 - **External links** — open in your default browser automatically
 
