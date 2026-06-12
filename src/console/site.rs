@@ -27,7 +27,7 @@ use crate::utils::construct_certificates_and_client;
 /// file (e.g. after a crash) refuses connections, so this doubles as the
 /// is-it-running check: no pidfiles, no PID-reuse hazard.
 #[cfg(platform_linux)]
-fn runtime_show(id: &Ulid) -> bool {
+fn runtime_show(id: &Ulid, show: bool) -> bool {
     use std::io::Write;
     use std::os::unix::net::UnixStream;
 
@@ -35,7 +35,9 @@ fn runtime_show(id: &Ulid) -> bool {
     let Ok(mut stream) = UnixStream::connect(format!("{rt}/ffwebapps-{id}.sock")) else {
         return false;
     };
-    stream.write_all(b"hello v1 launcher\nshow\n").is_ok()
+    let msg: &[u8] =
+        if show { b"hello v1 launcher\nshow\n" } else { b"hello v1 launcher\n" };
+    stream.write_all(msg).is_ok()
 }
 
 /// Spawn the tray helper for a web app. It de-duplicates itself per app id, so
@@ -91,7 +93,7 @@ impl Run for SiteLaunchCommand {
         #[cfg(platform_linux)]
         {
             let has_target = matches!(&self.protocol, Some(Some(_))) || !self.url.is_empty();
-            if !has_target && runtime_show(&self.id) {
+            if !has_target && runtime_show(&self.id, !self.hidden) {
                 info!("Web app already running — focusing the existing window");
                 spawn_tray(&dirs, site);
                 return Ok(());
@@ -192,12 +194,19 @@ impl Run for SiteLaunchCommand {
         crate::components::taskbartabs::write_profile_prefs(&profile_dir, site)
             .context("Failed to write web app preferences")?;
 
+        // Environment passed to the runtime: the stored user variables, plus
+        // the start-hidden request honoured by the runtime's autoconfig.
+        let mut variables = storage.variables.clone();
+        if self.hidden {
+            variables.insert("FFWEBAPPS_START_HIDDEN".into(), "1".into());
+        }
+
         info!("Launching the web app");
         cfg_if! {
             if #[cfg(platform_macos)] {
-                site.launch(&dirs, &runtime, &storage.config, &url, args, storage.variables)?.wait()?;
+                site.launch(&dirs, &runtime, &storage.config, &url, args, variables)?.wait()?;
             } else {
-                site.launch(&dirs, &runtime, &storage.config, &url, args, storage.variables)?;
+                site.launch(&dirs, &runtime, &storage.config, &url, args, variables)?;
             }
         }
 
@@ -256,6 +265,8 @@ impl SiteInstallCommand {
             allowed_domains: vec![],
             hardware_webrtc: self.hardware_webrtc,
             scheduling: self.scheduling.clone(),
+            user_agent: None,
+            start_hidden: false,
         };
 
         let client = construct_certificates_and_client(
@@ -294,6 +305,7 @@ impl SiteInstallCommand {
                 url: vec![],
                 protocol: None,
                 arguments: vec![],
+                hidden: false,
                 #[cfg(platform_macos)]
                 direct_launch: false,
             };
@@ -373,6 +385,8 @@ impl Run for SiteUpdateCommand {
         store_value!(site.config.launch_on_browser, self.launch_on_browser);
         store_value!(site.config.hardware_webrtc, self.hardware_webrtc);
         store_value!(site.config.scheduling, self.scheduling);
+        store_value!(site.config.user_agent, self.user_agent);
+        store_value!(site.config.start_hidden, self.start_hidden);
 
         let client = construct_certificates_and_client(
             self.client.user_agent.as_deref(),

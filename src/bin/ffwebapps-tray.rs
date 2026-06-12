@@ -37,7 +37,7 @@ mod linux {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
-    use ksni::menu::StandardItem;
+    use ksni::menu::{CheckmarkItem, StandardItem};
     use ksni::{Handle, MenuItem, Tray, TrayService};
 
     fn rt_dir() -> String {
@@ -116,6 +116,12 @@ mod linux {
     struct State {
         unread: u32,
         runtime_pid: Option<i32>,
+        // Mirrors of the runtime's state, pushed over the socket ("state ..."
+        // lines); drive the dynamic menu labels and checkmarks.
+        hidden: bool,
+        muted: bool,
+        dnd: bool,
+        suspend: bool,
     }
 
     #[derive(Clone)]
@@ -201,11 +207,59 @@ mod linux {
         }
 
         fn menu(&self) -> Vec<MenuItem<Self>> {
+            let (hidden, muted, dnd, suspend) = {
+                let st = self.state.lock().unwrap();
+                (st.hidden, st.muted, st.dnd, st.suspend)
+            };
             vec![
                 StandardItem {
-                    label: "Open".into(),
+                    label: if hidden { "Show" } else { "Hide" }.into(),
                     icon_name: self.opts.icon.clone(),
                     activate: Box::new(|this: &mut Self| this.activate_app()),
+                    ..Default::default()
+                }
+                .into(),
+                StandardItem {
+                    label: "Reload".into(),
+                    icon_name: "view-refresh".into(),
+                    activate: Box::new(|this: &mut Self| this.send("reload")),
+                    ..Default::default()
+                }
+                .into(),
+                MenuItem::Separator,
+                CheckmarkItem {
+                    label: "Mute".into(),
+                    checked: muted,
+                    activate: Box::new(|this: &mut Self| this.send("mute-toggle")),
+                    ..Default::default()
+                }
+                .into(),
+                CheckmarkItem {
+                    label: "Do not disturb".into(),
+                    checked: dnd,
+                    activate: Box::new(|this: &mut Self| this.send("dnd-toggle")),
+                    ..Default::default()
+                }
+                .into(),
+                CheckmarkItem {
+                    label: "Suspend when hidden".into(),
+                    checked: suspend,
+                    activate: Box::new(|this: &mut Self| this.send("suspend-toggle")),
+                    ..Default::default()
+                }
+                .into(),
+                MenuItem::Separator,
+                StandardItem {
+                    label: "Copy URL".into(),
+                    icon_name: "edit-copy".into(),
+                    activate: Box::new(|this: &mut Self| this.send("copy-url")),
+                    ..Default::default()
+                }
+                .into(),
+                StandardItem {
+                    label: "Open page in browser".into(),
+                    icon_name: "internet-web-browser".into(),
+                    activate: Box::new(|this: &mut Self| this.send("open-browser")),
                     ..Default::default()
                 }
                 .into(),
@@ -246,7 +300,14 @@ mod linux {
             let _ = conn.write_all(b"hello v1 tray\n");
         }
 
-        let state = Arc::new(Mutex::new(State { unread: 0, runtime_pid: None }));
+        let state = Arc::new(Mutex::new(State {
+            unread: 0,
+            runtime_pid: None,
+            hidden: false,
+            muted: false,
+            dnd: false,
+            suspend: false,
+        }));
 
         // The current ksni handle is replaced whenever the service is re-created
         // (after a StatusNotifier host restart); the reader thread uses it to push
@@ -274,6 +335,25 @@ mod linux {
                             changed
                         };
                         if changed && let Some(handle) = cur_handle.lock().unwrap().as_ref() {
+                            handle.update(|_: &mut AppTray| {});
+                        }
+                    } else if let Some(rest) = line.strip_prefix("state ") {
+                        {
+                            let mut st = state.lock().unwrap();
+                            for token in rest.split_whitespace() {
+                                if let Some((key, value)) = token.split_once('=') {
+                                    let on = value == "1";
+                                    match key {
+                                        "hidden" => st.hidden = on,
+                                        "muted" => st.muted = on,
+                                        "dnd" => st.dnd = on,
+                                        "suspend" => st.suspend = on,
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+                        if let Some(handle) = cur_handle.lock().unwrap().as_ref() {
                             handle.update(|_: &mut AppTray| {});
                         }
                     }

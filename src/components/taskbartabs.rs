@@ -202,6 +202,15 @@ pub fn write_profile_prefs(profile_dir: &Path, site: &Site) -> Result<()> {
         );
     }
 
+    // Per-app User-Agent override (some sites degrade or block the Firefox UA).
+    if let Some(user_agent) = &site.config.user_agent
+        && !user_agent.is_empty()
+    {
+        let escaped = user_agent.replace('\\', "\\\\").replace('"', "\\\"");
+        contents
+            .push_str(&format!("user_pref(\"general.useragent.override\", \"{escaped}\");\n"));
+    }
+
     create_dir_all(profile_dir).context("Failed to create profile directory")?;
     write(profile_dir.join("user.js"), contents).context("Failed to write profile prefs")?;
 

@@ -54,6 +54,10 @@ pub struct SiteLaunchCommand {
     #[clap(long, conflicts_with = "url", value_hint = clap::ValueHint::Url)]
     pub protocol: Option<Option<Url>>,
 
+    /// Start the web app hidden in the system tray
+    #[clap(long)]
+    pub hidden: bool,
+
     /// Internal: Directly launch web app without system integration
     #[cfg(target_os = "macos")]
     #[clap(long, hide = true)]
@@ -203,6 +207,14 @@ pub struct SiteUpdateCommand {
     /// Scheduling policy for the runtime: nice:-5, rr:5, fifo:5, batch, idle (empty to clear)
     #[clap(long)]
     pub scheduling: Option<Option<String>>,
+
+    /// Custom User-Agent string for this web app (empty to clear)
+    #[clap(long)]
+    pub user_agent: Option<Option<String>>,
+
+    /// Start hidden in the system tray when launched on login
+    #[clap(long)]
+    pub start_hidden: Option<bool>,
 
     /// Disable system integration
     #[clap(long = "no-system-integration", action = ArgAction::SetFalse)]

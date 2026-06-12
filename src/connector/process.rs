@@ -119,6 +119,7 @@ impl Process for LaunchSite {
             url: self.url.to_owned(),
             protocol: None,
             arguments: vec![],
+            hidden: false,
             #[cfg(platform_macos)]
             direct_launch: false,
         };
@@ -183,6 +184,8 @@ impl Process for UpdateSite {
             update_icons: self.update_icons,
             hardware_webrtc: None,
             scheduling: None,
+            user_agent: None,
+            start_hidden: None,
             system_integration: true,
             client: self.client.to_owned().into(),
         };

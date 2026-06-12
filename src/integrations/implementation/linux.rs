@@ -1,6 +1,6 @@
 use std::convert::TryInto;
 use std::fmt::Write as FmtWrite;
-use std::fs::{File, copy, create_dir_all, remove_file, write};
+use std::fs::{File, create_dir_all, remove_file, write};
 use std::io::Write as IoWrite;
 use std::path::Path;
 use std::process::Command;
@@ -312,8 +312,18 @@ fn create_startup_entry(
     let autostart_entry = config.join("autostart").join(format!("{}.desktop", ids.classid));
 
     if args.site.config.launch_on_login {
-        // If launch on login is enabled, copy its shortcut to the autostart directory
-        copy(applications_entry, autostart_entry).context(COPY_STARTUP_ENTRY_ERROR)?;
+        // If launch on login is enabled, copy its shortcut to the autostart
+        // directory — with `--hidden` added when the app should start in the
+        // tray instead of opening its window at login.
+        let mut entry =
+            std::fs::read_to_string(applications_entry).context(COPY_STARTUP_ENTRY_ERROR)?;
+        if args.site.config.start_hidden {
+            entry = entry.replace(
+                &format!("site launch {}", args.site.ulid),
+                &format!("site launch {} --hidden", args.site.ulid),
+            );
+        }
+        write(autostart_entry, entry).context(COPY_STARTUP_ENTRY_ERROR)?;
     } else {
         // Otherwise, try to remove its shortcut from the autostart directory
         let _ = remove_file(autostart_entry);

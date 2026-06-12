@@ -126,6 +126,16 @@ pub struct SiteConfig {
     /// normal scheduling if they can't be applied.
     #[serde(default)]
     pub scheduling: Option<String>,
+
+    /// Custom User-Agent string for this web app (some sites degrade or block
+    /// the Firefox UA). Unset = Firefox default.
+    #[serde(default)]
+    pub user_agent: Option<String>,
+
+    /// Whether the launch-on-login autostart entry starts the app hidden in
+    /// the system tray instead of opening its window.
+    #[serde(default)]
+    pub start_hidden: bool,
 }
 
 /// Build the launch wrapper for an optional scheduling spec. Returns an empty
