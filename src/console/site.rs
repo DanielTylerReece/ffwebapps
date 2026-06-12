@@ -37,19 +37,21 @@ fn runtime_running(id: &Ulid) -> bool {
 /// calling this when a tray is already running is a no-op.
 #[cfg(platform_linux)]
 fn spawn_tray(dirs: &ProjectDirs, site: &Site) {
-    let tray_bin = dirs.executables.join("ffwebapps-tray");
+    // Locate the tray binary next to the running `ffwebapps` binary — they are
+    // always installed together. This is robust regardless of how we were
+    // launched: the desktop (.desktop) launcher does NOT set FFPWA_EXECUTABLES,
+    // so `dirs.executables` would otherwise fall back to a default dir and the
+    // tray would silently fail to start (no tray icon on a menu/taskbar launch).
+    let tray_bin = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("ffwebapps-tray")))
+        .filter(|path| path.exists())
+        .unwrap_or_else(|| dirs.executables.join("ffwebapps-tray"));
     let icon = format!("FFPWA-{}", site.ulid);
     let wmclass = match site.config.webapp_id {
         Some(id) => format!("org.mozilla.firefox.webapp-{id}"),
         None => format!("FFPWA-{}", site.ulid),
     };
-    let exec = format!(
-        "env FFPWA_USERDATA={} FFPWA_SYSDATA={} {} site launch {}",
-        dirs.userdata.display(),
-        dirs.sysdata.display(),
-        dirs.executables.join("ffwebapps").display(),
-        site.ulid,
-    );
     let _ = std::process::Command::new(tray_bin)
         .args([
             "--id".to_string(),
@@ -60,8 +62,6 @@ fn spawn_tray(dirs: &ProjectDirs, site: &Site) {
             icon,
             "--wmclass".to_string(),
             wmclass,
-            "--exec".to_string(),
-            exec,
         ])
         .spawn();
 }
