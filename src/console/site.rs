@@ -22,15 +22,20 @@ use crate::integrations::{IntegrationInstallArgs, IntegrationUninstallArgs};
 use crate::storage::Storage;
 use crate::utils::construct_certificates_and_client;
 
-/// Is this web app's runtime already alive? (checks the `.running` pidfile)
+/// If this web app's runtime is already alive — its IPC socket accepts a
+/// connection — ask it to show/focus its window and return true. A stale socket
+/// file (e.g. after a crash) refuses connections, so this doubles as the
+/// is-it-running check: no pidfiles, no PID-reuse hazard.
 #[cfg(platform_linux)]
-fn runtime_running(id: &Ulid) -> bool {
+fn runtime_show(id: &Ulid) -> bool {
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
+
     let rt = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
-    std::fs::read_to_string(format!("{rt}/ffwebapps-{id}.running"))
-        .ok()
-        .and_then(|s| s.trim().parse::<i32>().ok())
-        .map(|pid| std::path::Path::new(&format!("/proc/{pid}")).exists())
-        .unwrap_or(false)
+    let Ok(mut stream) = UnixStream::connect(format!("{rt}/ffwebapps-{id}.sock")) else {
+        return false;
+    };
+    stream.write_all(b"hello v1 launcher\nshow\n").is_ok()
 }
 
 /// Spawn the tray helper for a web app. It de-duplicates itself per app id, so
@@ -48,10 +53,6 @@ fn spawn_tray(dirs: &ProjectDirs, site: &Site) {
         .filter(|path| path.exists())
         .unwrap_or_else(|| dirs.executables.join("ffwebapps-tray"));
     let icon = format!("FFPWA-{}", site.ulid);
-    let wmclass = match site.config.webapp_id {
-        Some(id) => format!("org.mozilla.firefox.webapp-{id}"),
-        None => format!("FFPWA-{}", site.ulid),
-    };
     let _ = std::process::Command::new(tray_bin)
         .args([
             "--id".to_string(),
@@ -60,8 +61,6 @@ fn spawn_tray(dirs: &ProjectDirs, site: &Site) {
             site.name(),
             "--icon".to_string(),
             icon,
-            "--wmclass".to_string(),
-            wmclass,
         ])
         .spawn();
 }
@@ -85,16 +84,15 @@ impl Run for SiteLaunchCommand {
         // Singleton: if this web app is already running, never open a second
         // window. A duplicate launch otherwise spawns another taskbar-tab window
         // that single-page apps reject ("open in another window / Use here").
-        // Instead, ask the tray to focus/restore the existing window, and make
-        // sure a tray is present. Skipped when a specific URL/protocol is given,
-        // which legitimately opens or navigates a window.
+        // Instead, ask the runtime (over its IPC socket) to show/focus the
+        // existing window, and make sure a tray is present. Skipped when a
+        // specific URL/protocol is given, which legitimately opens or navigates
+        // a window.
         #[cfg(platform_linux)]
         {
             let has_target = matches!(&self.protocol, Some(Some(_))) || !self.url.is_empty();
-            if runtime_running(&self.id) && !has_target {
+            if !has_target && runtime_show(&self.id) {
                 info!("Web app already running — focusing the existing window");
-                let rt = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
-                let _ = std::fs::write(format!("{rt}/ffwebapps-{}.show", self.id), "1");
                 spawn_tray(&dirs, site);
                 return Ok(());
             }

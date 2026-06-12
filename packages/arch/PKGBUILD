@@ -9,7 +9,7 @@
 #   source=("$pkgname::git+https://github.com/youruser/ffwebapps.git")
 
 pkgname=ffwebapps
-pkgver=0.1.0
+pkgver=0.1.0.r6.78bd8ea
 pkgrel=1
 pkgdesc="Run web apps as native, chromeless Firefox windows with system-tray integration"
 arch=('x86_64')

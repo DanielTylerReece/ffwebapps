@@ -335,6 +335,134 @@ fn remove_startup_entry(classid: &str, config: &Path) {
 }
 
 //////////////////////////////
+// KWin window rule (KDE only)
+//////////////////////////////
+
+// On Wayland the compositor places a (re-)mapped window itself: when a web app
+// window that was hidden to the tray (unmapped) is shown again, KWin would
+// re-place it instead of returning it to where the user left it. KWin's own
+// window rules support a "Remember" position policy (positionrule=4) that makes
+// KWin save and restore the position of matching windows — exactly what
+// hide-to-tray needs. We install one declarative rule per web app, keyed to its
+// window class, at integration-install time; KWin then handles positions itself
+// with no runtime moving parts. Other desktops are unaffected (this is KWin's
+// own config file and is only written in KDE sessions).
+
+fn kde_session() -> bool {
+    std::env::var("XDG_CURRENT_DESKTOP")
+        .unwrap_or_default()
+        .split(':')
+        .any(|desktop| desktop.eq_ignore_ascii_case("KDE"))
+}
+
+/// Surgically upsert or remove this app's rule section in ~/.config/kwinrulesrc
+/// and keep the `[General]` rules list/count in sync, preserving everything else
+/// in the file (the user's own rules, and values KWin writes back itself — for
+/// "Remember" rules KWin stores the remembered position in our section).
+fn write_kwin_rule(config: &Path, site: &Site, classid: &str, install: bool) -> Result<()> {
+    let webapp_id = match site.config.webapp_id {
+        Some(id) => id,
+        None => return Ok(()),
+    };
+    let path = config.join("kwinrulesrc");
+    let content = std::fs::read_to_string(&path).unwrap_or_default();
+    let section = format!("ffwebapps-{classid}");
+
+    // Split into (header, lines) blocks, dropping any existing section of ours.
+    let mut blocks: Vec<(String, Vec<String>)> = vec![(String::new(), vec![])];
+    for line in content.lines() {
+        if line.starts_with('[') {
+            blocks.push((line.to_string(), vec![]));
+        } else {
+            blocks.last_mut().unwrap().1.push(line.to_string());
+        }
+    }
+    blocks.retain(|(header, _)| header != &format!("[{section}]"));
+
+    // Only rules listed in [General] rules= are active; keep the list in sync.
+    if !blocks.iter().any(|(header, _)| header == "[General]") {
+        blocks.push(("[General]".to_string(), vec![]));
+    }
+    for (header, lines) in blocks.iter_mut() {
+        if header != "[General]" {
+            continue;
+        }
+        let mut rules: Vec<String> = lines
+            .iter()
+            .find_map(|line| line.strip_prefix("rules="))
+            .map(|list| list.split(',').filter(|id| !id.is_empty()).map(str::to_string).collect())
+            .unwrap_or_default();
+        rules.retain(|id| id != &section);
+        if install {
+            rules.push(section.clone());
+        }
+        lines.retain(|line| !line.starts_with("rules=") && !line.starts_with("count="));
+        lines.insert(0, format!("count={}", rules.len()));
+        lines.insert(1, format!("rules={}", rules.join(",")));
+    }
+
+    if install {
+        // No initial position= value: the rule stays inert until KWin writes the
+        // remembered position back on the first unmap, so the first launch gets
+        // normal placement instead of a forced corner.
+        blocks.push((
+            format!("[{section}]"),
+            vec![
+                format!(
+                    "Description=ffwebapps: remember window position for {}",
+                    sanitize_string(&site.name())
+                ),
+                "positionrule=4".to_string(),
+                format!("wmclass=org.mozilla.firefox.webapp-{webapp_id}"),
+                "wmclassmatch=1".to_string(),
+                "types=1".to_string(),
+            ],
+        ));
+    }
+
+    let mut out = String::new();
+    for (header, lines) in &blocks {
+        if !header.is_empty() {
+            out.push_str(header);
+            out.push('\n');
+        }
+        for line in lines {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    write(&path, out).context("Failed to write kwinrulesrc")?;
+    Ok(())
+}
+
+/// Ask KWin to reload its config so a rule change applies without a relogin.
+fn reconfigure_kwin() {
+    for command in [
+        ["qdbus6", "org.kde.KWin", "/KWin", "org.kde.KWin.reconfigure"].as_slice(),
+        ["qdbus", "org.kde.KWin", "/KWin", "org.kde.KWin.reconfigure"].as_slice(),
+        [
+            "dbus-send",
+            "--session",
+            "--type=method_call",
+            "--dest=org.kde.KWin",
+            "/KWin",
+            "org.kde.KWin.reconfigure",
+        ]
+        .as_slice(),
+    ] {
+        let success = Command::new(command[0])
+            .args(&command[1..])
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false);
+        if success {
+            return;
+        }
+    }
+    debug!("Could not ask KWin to reconfigure (rule applies after relogin)");
+}
+
+//////////////////////////////
 // Interface
 //////////////////////////////
 
@@ -371,6 +499,13 @@ pub fn install(args: &IntegrationInstallArgs) -> Result<()> {
     create_startup_entry(args, &ids, &data, &config).context("Failed to create startup entry")?;
     update_application_cache(&data);
 
+    if kde_session() {
+        match write_kwin_rule(&config, args.site, &ids.classid, true) {
+            Ok(()) => reconfigure_kwin(),
+            Err(error) => warn!("Failed to install the KWin window rule: {error}"),
+        }
+    }
+
     Ok(())
 }
 
@@ -386,6 +521,13 @@ pub fn uninstall(args: &IntegrationUninstallArgs) -> Result<()> {
     remove_desktop_entry(&ids.classid, data);
     remove_startup_entry(&ids.classid, config);
     update_application_cache(data);
+
+    if kde_session() {
+        match write_kwin_rule(config, args.site, &ids.classid, false) {
+            Ok(()) => reconfigure_kwin(),
+            Err(error) => warn!("Failed to remove the KWin window rule: {error}"),
+        }
+    }
 
     Ok(())
 }
