@@ -927,6 +927,7 @@ dependencies = [
  "ico",
  "image",
  "ksni",
+ "libc",
  "log",
  "phf 0.13.1",
  "pix",

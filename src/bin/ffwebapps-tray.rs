@@ -25,7 +25,8 @@ fn main() {
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use std::fs;
+    use std::fs::{self, File, OpenOptions};
+    use std::os::unix::io::AsRawFd;
     use std::path::PathBuf;
     use std::process::Command;
     use std::sync::{Arc, Mutex};
@@ -36,10 +37,6 @@ mod linux {
 
     fn rt_dir() -> String {
         std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into())
-    }
-
-    fn tray_pidfile(id: &str) -> PathBuf {
-        PathBuf::from(format!("{}/ffwebapps-tray-{id}.pid", rt_dir()))
     }
 
     fn log(msg: &str) {
@@ -58,12 +55,12 @@ mod linux {
         name: String,
         icon: String,
         wmclass: String,
-        exec: String,
         unread_file: PathBuf,
         hide_file: PathBuf,
         show_file: PathBuf,
         hidden_file: PathBuf,
         running_file: PathBuf,
+        quit_file: PathBuf,
     }
 
     fn parse_args() -> Options {
@@ -71,7 +68,6 @@ mod linux {
         let mut name = String::from("Web App");
         let mut icon = String::from("applications-internet");
         let mut wmclass = String::new();
-        let mut exec = String::new();
 
         let mut args = std::env::args().skip(1);
         while let Some(flag) = args.next() {
@@ -81,7 +77,11 @@ mod linux {
                 "--name" => name = value(),
                 "--icon" => icon = value(),
                 "--wmclass" => wmclass = value(),
-                "--exec" => exec = value(),
+                // --exec is accepted for compatibility but no longer used: the
+                // tray never relaunches the app (quitting tears it down).
+                "--exec" => {
+                    let _ = value();
+                }
                 _ => {}
             }
         }
@@ -93,25 +93,25 @@ mod linux {
             show_file: PathBuf::from(format!("{rt}/ffwebapps-{id}.show")),
             hidden_file: PathBuf::from(format!("{rt}/ffwebapps-{id}.hidden")),
             running_file: PathBuf::from(format!("{rt}/ffwebapps-{id}.running")),
+            quit_file: PathBuf::from(format!("{rt}/ffwebapps-{id}.quit")),
             id,
             name,
             icon,
             wmclass,
-            exec,
         }
     }
 
-    /// Singleton guard: if a tray for this app id is already alive, return true.
-    fn already_running(id: &str) -> bool {
-        let pidfile = tray_pidfile(id);
-        if let Ok(contents) = fs::read_to_string(&pidfile)
-            && let Ok(pid) = contents.trim().parse::<i32>()
-            && PathBuf::from(format!("/proc/{pid}")).exists()
-        {
-            return true;
-        }
-        let _ = fs::write(&pidfile, std::process::id().to_string());
-        false
+    /// Race-free singleton: hold an exclusive advisory lock (`flock`) on a
+    /// per-app lock file. Only one tray can hold it at a time; the OS releases it
+    /// automatically when the process exits or dies, so there are never stale or
+    /// orphaned locks, no reused-PID confusion, and a relaunched app always ends
+    /// up with exactly one tray. Returns the held lock file — keep it alive for
+    /// the whole process lifetime — or `None` if another tray already owns it.
+    fn acquire_singleton(id: &str) -> Option<File> {
+        let path = format!("{}/ffwebapps-tray-{id}.lock", rt_dir());
+        let file = OpenOptions::new().create(true).write(true).open(&path).ok()?;
+        let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if ret == 0 { Some(file) } else { None }
     }
 
     fn read_pid(file: &PathBuf) -> Option<i32> {
@@ -217,10 +217,10 @@ mod linux {
         /// Toggle the window (show <-> hide), or relaunch the app if it isn't
         /// running. Singleton-safe: relaunch remotes into the existing instance.
         fn activate_app(&self) {
+            // Only ever toggle a RUNNING app's window — never relaunch. Quitting
+            // the app tears the tray down, so a stray click can't bring it back.
             if !pid_alive(&self.opts.running_file) {
-                log("activate: not running -> launch");
-                let _ = Command::new("sh").arg("-c").arg(&self.opts.exec).spawn();
-                let _ = fs::remove_file(&self.opts.hidden_file);
+                log("activate: runtime not running — ignoring");
                 return;
             }
             if is_hidden(&self.opts.hidden_file) {
@@ -235,8 +235,24 @@ mod linux {
         /// Quit the whole app: terminate the runtime, clean up, then exit.
         fn quit_app(&self) {
             log("quit: terminating runtime");
+            // Signal the runtime that this is a real quit, so its close-to-tray
+            // interception lets the window actually close instead of vetoing it
+            // into a hide. Then ask it to quit, and force-kill if it lingers, so
+            // Quit always tears the app down — it never survives as a trayless
+            // window.
+            let _ = fs::write(&self.opts.quit_file, "1");
             if let Some(pid) = read_pid(&self.opts.running_file) {
                 let _ = Command::new("kill").arg("-TERM").arg(pid.to_string()).status();
+                let alive = || PathBuf::from(format!("/proc/{pid}")).exists();
+                let mut waited = 0;
+                while alive() && waited < 30 {
+                    std::thread::sleep(Duration::from_millis(100));
+                    waited += 1;
+                }
+                if alive() {
+                    log("quit: runtime did not exit in time, sending SIGKILL");
+                    let _ = Command::new("kill").arg("-KILL").arg(pid.to_string()).status();
+                }
             }
             cleanup(&self.opts);
             std::process::exit(0);
@@ -304,11 +320,16 @@ mod linux {
 
     /// Remove this app's runtime sentinels and the tray pidfile.
     fn cleanup(opts: &Options) {
+        // Called only when the tray is exiting (the runtime is gone), so it's
+        // safe to also clear the runtime's `.running` pidfile in case the runtime
+        // didn't remove it itself — preventing a stale/reused pid from later
+        // looking "already running".
+        let _ = fs::remove_file(&opts.running_file);
         let _ = fs::remove_file(&opts.unread_file);
         let _ = fs::remove_file(&opts.hide_file);
         let _ = fs::remove_file(&opts.show_file);
         let _ = fs::remove_file(&opts.hidden_file);
-        let _ = fs::remove_file(tray_pidfile(&opts.id));
+        let _ = fs::remove_file(&opts.quit_file);
     }
 
     pub fn run() {
@@ -317,9 +338,13 @@ mod linux {
             eprintln!("ffwebapps-tray: --id is required");
             std::process::exit(1);
         }
-        if already_running(&opts.id) {
-            return;
-        }
+        // Race-free singleton: hold the per-app lock for the whole process
+        // lifetime (binding kept in scope until the process exits). If another
+        // tray already owns this app, exit immediately — no duplicate, no orphan.
+        let _singleton = match acquire_singleton(&opts.id) {
+            Some(lock) => lock,
+            None => return,
+        };
 
         let state = Arc::new(Mutex::new(State { unread: read_unread(&opts.unread_file) }));
 
