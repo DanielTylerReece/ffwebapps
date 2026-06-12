@@ -190,12 +190,27 @@ pub fn write_profile_prefs(profile_dir: &Path, site: &Site) -> Result<()> {
          user_pref(\"ffwebapps.allowedDomains\", \"{list}\");\n"
     );
 
+    // Opt-in: keep this app entirely off the GPU — software WebRender
+    // compositing and software video decode. For machines where the GPU driver
+    // itself is the instability. Takes precedence over `hardware_webrtc`.
+    if site.config.software_rendering {
+        contents.push_str(
+            "user_pref(\"gfx.webrender.software\", true);\n\
+             user_pref(\"layers.acceleration.disabled\", true);\n\
+             user_pref(\"media.hardware-video-decoding.enabled\", false);\n\
+             user_pref(\"media.hardware-video-decoding.force-enabled\", false);\n\
+             user_pref(\"media.ffmpeg.vaapi.enabled\", false);\n\
+             user_pref(\"media.navigator.mediadatadecoder_vp8_hardware_enabled\", false);\n\
+             user_pref(\"media.navigator.mediadatadecoder_vp9_hardware_enabled\", false);\n\
+             user_pref(\"media.navigator.mediadatadecoder_h264_hardware_enabled\", false);\n",
+        );
+    }
     // Opt-in: force/maximise hardware video decoding for WebRTC calls. On Linux
     // Firefox already GPU-decodes regular video and the WebRTC H.264/VP9 paths
     // by default; the two knobs left off are (a) forcing decode past Firefox's
     // GPU blocklist and (b) the hardware VP8 path (WhatsApp/Meet). Both can
     // expose driver bugs, hence opt-in. Verify with about:support / about:webrtc.
-    if site.config.hardware_webrtc {
+    else if site.config.hardware_webrtc {
         contents.push_str(
             "user_pref(\"media.hardware-video-decoding.force-enabled\", true);\n\
              user_pref(\"media.navigator.mediadatadecoder_vp8_hardware_enabled\", true);\n",

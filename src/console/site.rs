@@ -264,6 +264,7 @@ impl SiteInstallCommand {
             external_links: None,
             allowed_domains: vec![],
             hardware_webrtc: self.hardware_webrtc,
+            software_rendering: self.software_rendering,
             scheduling: self.scheduling.clone(),
             user_agent: None,
             start_hidden: false,
@@ -384,6 +385,7 @@ impl Run for SiteUpdateCommand {
         store_value!(site.config.launch_on_login, self.launch_on_login);
         store_value!(site.config.launch_on_browser, self.launch_on_browser);
         store_value!(site.config.hardware_webrtc, self.hardware_webrtc);
+        store_value!(site.config.software_rendering, self.software_rendering);
         store_value!(site.config.scheduling, self.scheduling);
         store_value!(site.config.user_agent, self.user_agent);
         store_value!(site.config.start_hidden, self.start_hidden);

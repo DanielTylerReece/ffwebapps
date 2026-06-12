@@ -120,6 +120,10 @@ pub struct SiteInstallCommand {
     #[clap(long)]
     pub hardware_webrtc: bool,
 
+    /// Disable hardware acceleration for this app (software compositing and video decode)
+    #[clap(long)]
+    pub software_rendering: bool,
+
     /// Scheduling policy for the runtime: nice:-5, rr:5, fifo:5, batch or idle
     #[clap(long)]
     pub scheduling: Option<String>,
@@ -203,6 +207,10 @@ pub struct SiteUpdateCommand {
     /// Force/maximise hardware video decoding for WebRTC calls (needs a working VA-API driver)
     #[clap(long)]
     pub hardware_webrtc: Option<bool>,
+
+    /// Disable hardware acceleration for this app (software compositing and video decode)
+    #[clap(long)]
+    pub software_rendering: Option<bool>,
 
     /// Scheduling policy for the runtime: nice:-5, rr:5, fifo:5, batch, idle (empty to clear)
     #[clap(long)]

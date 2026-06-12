@@ -119,6 +119,12 @@ pub struct SiteConfig {
     #[serde(default)]
     pub hardware_webrtc: bool,
 
+    /// Opt-in: disable hardware acceleration for this app — software WebRender
+    /// compositing and software video decode. For machines where the GPU
+    /// driver itself causes hangs or lockups. Overrides `hardware_webrtc`.
+    #[serde(default)]
+    pub software_rendering: bool,
+
     /// Opt-in: process scheduling applied to the runtime at launch, e.g.
     /// `nice:-5`, `rr:5`, `fifo:5`, `batch`, `idle`. Keeps audio/video
     /// glitch-free under load (useful for video chat on RT kernels). RT
