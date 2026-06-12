@@ -15,8 +15,10 @@ the Firefox runtime (privileged JS in `userchrome/runtime/_autoconfig.cfg` via
 `nsIServerSocket.initWithFilename`). Newline-delimited protocol:
 
 - client → runtime: `hello v1 tray` / `hello v1 launcher`, `show`, `hide`,
-  `toggle`, `quit`
-- runtime → client: `hello v1 <pid>` once, then `unread <n>` on change
+  `toggle`, `quit`, `reload`, `mute-toggle`, `dnd-toggle`, `suspend-toggle`,
+  `autostart-toggle`, `copy-url`, `open-browser`
+- runtime → client: `hello v1 <pid>` once, then `unread <n>` and
+  `state hidden=… muted=… dnd=… suspend=… autostart=…` on change
 
 There are **no sentinel files and no pidfiles**. Runtime alive ⟺ socket accepts.
 
@@ -69,6 +71,27 @@ PKGBUILD: `packages/arch/` (installs `/usr/bin/ffwebapps{,-tray}` +
 Verified working: launch, tray icon, close-to-tray hide, tray toggle show/hide
 at exact position, singleton focus-instead-of-duplicate, quit with full
 teardown and no relaunch, unread badge.
+
+## Feature batch (2026-06-12, commits 9ac11ad + c546b8e)
+
+- Tray menu: dynamic Show/Hide, Reload, checkable Mute / Do not disturb /
+  Suspend when hidden (opt-in: docShellIsActive=false + renderLayers=false
+  while hidden — throttled but WebSockets alive) / Start on login (runs
+  `site update --launch-on-login X --start-hidden X` via the runtime;
+  checkmark = autostart .desktop existence), Copy URL, Open page in browser.
+  All verbs execute runtime-side; the tray still spawns nothing.
+- `site launch --hidden` (env `FFWEBAPPS_START_HIDDEN=1` → runtime hides after
+  first map); `site update --start-hidden true` puts `--hidden` in the
+  autostart entry only.
+- `site update --user-agent "<ua>"` → `general.useragent.override` per app.
+- `ffwebapps.css` / `ffwebapps.js` in the profile dir → injected CSP-immune
+  (USER_SHEET via windowUtils / content-principal sandbox), read at startup.
+- Memory: `dom.ipc.processCount=4`, `dom.ipc.processCount.webIsolated=1` in
+  the autoconfig (content-process pools only; RDD/GPU/socket processes for
+  calls/video are unaffected).
+- Deferred by choice: global show/hide hotkey (portal GlobalShortcuts — new
+  async D-Bus deps + per-app binding UX); Unity LauncherEntry taskbar badge
+  (user explicitly rejected).
 
 ## Open / deferred
 
