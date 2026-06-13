@@ -19,6 +19,7 @@ depends=('firefox')
 makedepends=('rust' 'cargo' 'git')
 optdepends=('qt6-tools: KDE tray hide/show & window control (qdbus6)'
             'plasma-workspace: KDE Plasma system tray and KWin')
+options=('!lto') # CachyOS
 install="$pkgname.install"
 source=("$pkgname::git+https://github.com/nine7nine/ffwebapps.git")
 sha256sums=('SKIP')
